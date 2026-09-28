@@ -1491,6 +1491,7 @@ fn set_startup_enabled(enable: bool) {
 // Dimensions matching the C# version
 const SEGMENT_W: i32 = 10;
 const SEGMENT_H: i32 = 13;
+const ROW_HEIGHT: i32 = 18;
 const SEGMENT_GAP: i32 = 1;
 const SEGMENT_COUNT: i32 = 10;
 
@@ -1537,14 +1538,106 @@ fn row_bar_segment_count(active_models: i32) -> i32 {
     }
 }
 
-fn usage_layout_widths(language: LanguageId) -> (i32, i32) {
-    if language == LanguageId::SimplifiedChinese {
+fn usage_layout_samples(language: LanguageId) -> (Vec<&'static str>, Vec<String>) {
+    let strings = language.strings();
+    let labels = vec![strings.session_window, strings.weekly_window];
+    let values = if language == LanguageId::SimplifiedChinese {
+        vec![
+            "剩余100%  23:59重置".to_string(),
+            "剩余100%  12/31重置".to_string(),
+        ]
+    } else {
+        [
+            strings.day_suffix,
+            strings.hour_suffix,
+            strings.minute_suffix,
+            strings.second_suffix,
+        ]
+        .into_iter()
+        .map(|suffix| format!("100% · 999{suffix}"))
+        .chain(std::iter::once(format!("100% · {}", strings.now)))
+        .collect()
+    };
+    (labels, values)
+}
+
+unsafe fn create_widget_font(appearance: Appearance) -> HFONT {
+    let font_name = native_interop::wide_str("Segoe UI");
+    CreateFontW(
+        sc(match appearance.font_size {
+            FontSize::Standard => -12,
+            FontSize::Large => -13,
+        }),
+        0,
+        0,
+        0,
+        if appearance.palette == Palette::System {
+            FW_MEDIUM.0 as i32
+        } else {
+            FW_BOLD.0 as i32
+        },
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET.0 as u32,
+        OUT_TT_PRECIS.0 as u32,
+        CLIP_DEFAULT_PRECIS.0 as u32,
+        CLEARTYPE_QUALITY.0 as u32,
+        (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
+        PCWSTR::from_raw(font_name.as_ptr()),
+    )
+}
+
+fn usage_layout_widths(language: LanguageId, appearance: Appearance) -> (i32, i32) {
+    let fallback = if language == LanguageId::SimplifiedChinese {
         (
-            SIMPLIFIED_CHINESE_LABEL_WIDTH,
-            SIMPLIFIED_CHINESE_TEXT_WIDTH,
+            sc(SIMPLIFIED_CHINESE_LABEL_WIDTH),
+            sc(SIMPLIFIED_CHINESE_TEXT_WIDTH),
         )
     } else {
-        (LABEL_WIDTH, TEXT_WIDTH)
+        (sc(LABEL_WIDTH), sc(TEXT_WIDTH))
+    };
+    unsafe {
+        let hdc = GetDC(HWND::default());
+        if hdc.is_invalid() {
+            return fallback;
+        }
+        let font = create_widget_font(appearance);
+        if font.is_invalid() {
+            ReleaseDC(HWND::default(), hdc);
+            return fallback;
+        }
+        let old_font = SelectObject(hdc, font);
+        let measure = |value: &str| {
+            let wide: Vec<u16> = value.encode_utf16().collect();
+            let mut size = SIZE::default();
+            if GetTextExtentPoint32W(hdc, &wide, &mut size).as_bool() {
+                size.cx
+            } else {
+                0
+            }
+        };
+        let (labels, values) = usage_layout_samples(language);
+        let widths = (
+            labels
+                .into_iter()
+                .map(measure)
+                .max()
+                .unwrap_or(0)
+                .max(fallback.0)
+                + sc(2),
+            values
+                .iter()
+                .map(|value| measure(value))
+                .max()
+                .unwrap_or(0)
+                .max(fallback.1)
+                + sc(3),
+        );
+        SelectObject(hdc, old_font);
+        let _ = DeleteObject(font);
+        ReleaseDC(HWND::default(), hdc);
+        widths
     }
 }
 
@@ -1556,16 +1649,16 @@ fn usage_percent_for_display(language: LanguageId, used_percentage: f64) -> f64 
     }
 }
 
-fn total_widget_width_for(active_models: i32, language: LanguageId) -> i32 {
+fn total_widget_width_for(active_models: i32, language: LanguageId, appearance: Appearance) -> i32 {
     let bar_segments = row_bar_segment_count(active_models);
-    let (label_width, text_width) = usage_layout_widths(language);
+    let (label_width, text_width) = usage_layout_widths(language, appearance);
     let model_width = (sc(SEGMENT_W) + sc(SEGMENT_GAP)) * bar_segments - sc(SEGMENT_GAP)
         + sc(BAR_RIGHT_MARGIN)
-        + sc(text_width);
+        + text_width;
 
     sc(LEFT_DIVIDER_W)
         + sc(DIVIDER_RIGHT_MARGIN)
-        + sc(label_width)
+        + label_width
         + sc(LABEL_RIGHT_MARGIN)
         + model_width * active_models
         + sc(MODEL_RIGHT_MARGIN) * (active_models - 1)
@@ -1580,11 +1673,12 @@ fn total_widget_width_for_state(state: &AppState) -> i32 {
             state.show_antigravity,
         ),
         state.language,
+        state.appearance,
     )
 }
 
 fn total_widget_width() -> i32 {
-    let (active_models, language) = {
+    let (active_models, language, appearance) = {
         let state = lock_state();
         state
             .as_ref()
@@ -1592,11 +1686,12 @@ fn total_widget_width() -> i32 {
                 (
                     active_model_count(s.show_claude_code, s.show_codex, s.show_antigravity),
                     s.language,
+                    s.appearance,
                 )
             })
-            .unwrap_or((1, LanguageId::English))
+            .unwrap_or((1, LanguageId::English, Appearance::default()))
     };
-    total_widget_width_for(active_models, language)
+    total_widget_width_for(active_models, language, appearance)
 }
 
 fn claude_accent_color() -> Color {
@@ -1758,7 +1853,7 @@ pub fn run() {
             WS_POPUP,
             0,
             0,
-            total_widget_width_for(initial_model_count, language),
+            total_widget_width_for(initial_model_count, language, settings.appearance),
             sc(WIDGET_HEIGHT),
             HWND::default(),
             HMENU::default(),
@@ -2165,7 +2260,7 @@ fn paint_content(
         let codex_weekly_pct = usage_percent_for_display(language, codex_weekly_pct);
         let antigravity_session_pct = usage_percent_for_display(language, antigravity_session_pct);
         let antigravity_weekly_pct = usage_percent_for_display(language, antigravity_weekly_pct);
-        let (label_width, text_width) = usage_layout_widths(language);
+        let (label_width, text_width) = usage_layout_widths(language, appearance);
 
         let client_rect = RECT {
             left: 0,
@@ -2219,39 +2314,16 @@ fn paint_content(
         let row_gap = if height < sc(WIDGET_HEIGHT) {
             sc(2)
         } else {
-            sc(10)
+            sc(8)
         };
-        let row1_y = (height - 2 * sc(SEGMENT_H) - row_gap).max(0) / 2;
-        let row2_y = row1_y + sc(SEGMENT_H) + row_gap;
-        let single_row_y = (height - sc(SEGMENT_H)) / 2;
+        let row1_y = (height - 2 * sc(ROW_HEIGHT) - row_gap).max(0) / 2;
+        let row2_y = row1_y + sc(ROW_HEIGHT) + row_gap;
+        let single_row_y = (height - sc(ROW_HEIGHT)) / 2;
 
         let _ = SetBkMode(hdc, TRANSPARENT);
         let _ = SetTextColor(hdc, COLORREF(text_color.to_colorref()));
 
-        let font_name = native_interop::wide_str("Segoe UI");
-        let font = CreateFontW(
-            sc(match appearance.font_size {
-                FontSize::Standard => -12,
-                FontSize::Large => -13,
-            }),
-            0,
-            0,
-            0,
-            if appearance.palette == Palette::System {
-                FW_MEDIUM.0 as i32
-            } else {
-                FW_BOLD.0 as i32
-            },
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET.0 as u32,
-            OUT_TT_PRECIS.0 as u32,
-            CLIP_DEFAULT_PRECIS.0 as u32,
-            CLEARTYPE_QUALITY.0 as u32,
-            (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
-            PCWSTR::from_raw(font_name.as_ptr()),
-        );
+        let font = create_widget_font(appearance);
         let old_font = SelectObject(hdc, font);
 
         if show_session_window {
@@ -4116,7 +4188,6 @@ fn draw_row(
     label_width: i32,
     text_width: i32,
 ) {
-    let seg_h = sc(SEGMENT_H);
     let active_models = active_model_count(show_claude_code, show_codex, show_antigravity);
     let segment_count = row_bar_segment_count(active_models);
     let use_model_text_colors = active_models > 1 && appearance.palette == Palette::System;
@@ -4143,8 +4214,8 @@ fn draw_row(
         let mut label_rect = RECT {
             left: x,
             top: y,
-            right: x + sc(label_width),
-            bottom: y + seg_h,
+            right: x + label_width,
+            bottom: y + sc(ROW_HEIGHT),
         };
         let _ = DrawTextW(
             hdc,
@@ -4153,7 +4224,7 @@ fn draw_row(
             DT_LEFT | DT_VCENTER | DT_SINGLELINE,
         );
 
-        let mut model_x = x + sc(label_width) + sc(LABEL_RIGHT_MARGIN);
+        let mut model_x = x + label_width + sc(LABEL_RIGHT_MARGIN);
         if show_claude_code {
             draw_usage_bar(
                 hdc,
@@ -4207,7 +4278,7 @@ fn draw_row(
 fn model_usage_width(segment_count: i32, text_width: i32) -> i32 {
     (sc(SEGMENT_W) + sc(SEGMENT_GAP)) * segment_count - sc(SEGMENT_GAP)
         + sc(BAR_RIGHT_MARGIN)
-        + sc(text_width)
+        + text_width
 }
 
 fn draw_usage_bar(
@@ -4228,7 +4299,7 @@ fn draw_usage_bar(
     let seg_gap = sc(SEGMENT_GAP);
     let bar_width = segment_count * (seg_w + seg_gap) - seg_gap;
     let corner_r = seg_h / 2;
-    let bar_y = y + (sc(SEGMENT_H) - seg_h) / 2;
+    let bar_y = y + (sc(ROW_HEIGHT) - seg_h) / 2;
 
     unsafe {
         let percent_clamped = percent.clamp(0.0, 100.0);
@@ -4261,8 +4332,8 @@ fn draw_usage_bar(
         let mut text_rect = RECT {
             left: text_x,
             top: y,
-            right: text_x + sc(text_width),
-            bottom: y + sc(SEGMENT_H),
+            right: text_x + text_width,
+            bottom: y + sc(ROW_HEIGHT),
         };
         let _ = SetTextColor(hdc, COLORREF(text_color.to_colorref()));
         let _ = DrawTextW(
@@ -4321,6 +4392,44 @@ fn draw_rounded_rect(hdc: HDC, rect: &RECT, color: &Color, radius: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn localized_widget_text_fits_measured_columns_and_rows() {
+        unsafe {
+            let hdc = GetDC(HWND::default());
+            assert!(!hdc.is_invalid());
+            for language in LanguageId::ALL {
+                for appearance in [
+                    Appearance::default(),
+                    Appearance::translucent_dark_taskbar(),
+                ] {
+                    let (label_width, text_width) = usage_layout_widths(language, appearance);
+                    let font = create_widget_font(appearance);
+                    assert!(!font.is_invalid());
+                    let old_font = SelectObject(hdc, font);
+                    let mut metrics = TEXTMETRICW::default();
+                    assert!(GetTextMetricsW(hdc, &mut metrics).as_bool());
+                    assert!(metrics.tmHeight <= sc(ROW_HEIGHT));
+                    let (labels, values) = usage_layout_samples(language);
+                    for (text, width) in labels
+                        .into_iter()
+                        .map(|s| (s, label_width))
+                        .chain(values.iter().map(|s| (s.as_str(), text_width)))
+                    {
+                        let wide: Vec<u16> = text.encode_utf16().collect();
+                        let mut rect = RECT::default();
+                        let mut text = wide;
+                        DrawTextW(hdc, &mut text, &mut rect, DT_CALCRECT | DT_SINGLELINE);
+                        assert!(rect.right <= width, "{language:?}: {text:?}");
+                        assert!(rect.bottom <= sc(ROW_HEIGHT), "{language:?}: {text:?}");
+                    }
+                    SelectObject(hdc, old_font);
+                    let _ = DeleteObject(font);
+                }
+            }
+            ReleaseDC(HWND::default(), hdc);
+        }
+    }
 
     #[test]
     fn service_tooltip_combines_visible_quota_rows() {
