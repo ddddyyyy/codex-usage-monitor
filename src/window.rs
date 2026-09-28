@@ -4399,10 +4399,17 @@ mod tests {
             let hdc = GetDC(HWND::default());
             assert!(!hdc.is_invalid());
             for language in LanguageId::ALL {
-                for appearance in [
-                    Appearance::default(),
-                    Appearance::translucent_dark_taskbar(),
+                for (palette, font_size) in [
+                    (Palette::System, FontSize::Standard),
+                    (Palette::System, FontSize::Large),
+                    (Palette::HighContrastDark, FontSize::Standard),
+                    (Palette::HighContrastDark, FontSize::Large),
                 ] {
+                    let appearance = Appearance {
+                        palette,
+                        font_size,
+                        ..Appearance::default()
+                    };
                     let (label_width, text_width) = usage_layout_widths(language, appearance);
                     let font = create_widget_font(appearance);
                     assert!(!font.is_invalid());
