@@ -9,6 +9,8 @@
 
 ![Screenshot](.github/animation.gif)
 
+This animation shows the original segmented-bar design. Current builds let you choose segmented or continuous bars in **Appearance**.
+
 A lightweight native Windows taskbar widget for monitoring Codex usage, with optional Claude Code and Google Antigravity usage display.
 
 It sits in your taskbar and shows how much of your Codex usage window remains without opening the Codex app or account usage page.
@@ -121,6 +123,8 @@ In Simplified Chinese, the compact taskbar rows use `5h` / `7d`, remaining perce
 ### Appearance
 
 Right-click the widget or tray icon and open **Appearance** to choose a system, high-contrast dark, or high-contrast light palette; continuous or segmented bars; standard or slim bars; and standard or larger text. High-contrast palettes add a solid backdrop and bold text for readability over translucent taskbars. The **Recommended: translucent dark taskbar** action applies high-contrast dark colors, slim segmented bars, and larger text. The widget also fits its height to the selected taskbar, avoiding clipped rows on 40-pixel taskbars. Appearance choices are saved in `settings.json`; existing settings keep their previous appearance until changed.
+
+This fork's build checks this fork for updates, so an upstream release cannot replace your customized executable. The update check will fail until a release is published in this fork.
 
 ## Diagnostics
 
