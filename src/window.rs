@@ -376,7 +376,7 @@ impl Appearance {
     fn translucent_dark_taskbar() -> Self {
         Self {
             palette: Palette::HighContrastDark,
-            bar_style: BarStyle::Segmented,
+            bar_style: BarStyle::Continuous,
             bar_thickness: BarThickness::Slim,
             font_size: FontSize::Large,
         }
@@ -4496,6 +4496,7 @@ mod tests {
             appearance: Appearance::translucent_dark_taskbar(),
             ..old
         };
+        assert_eq!(customized.appearance.bar_style, BarStyle::Continuous);
         let json = serde_json::to_string(&customized).unwrap();
         let restored: SettingsFile = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.appearance, Appearance::translucent_dark_taskbar());
