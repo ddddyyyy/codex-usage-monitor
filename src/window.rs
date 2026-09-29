@@ -91,6 +91,7 @@ struct AppState {
     last_update_check_unix: Option<u64>,
 
     taskbar_index: usize,
+    monitor_device: Option<String>,
     tray_offset: i32,
     dragging: bool,
     drag_start_mouse_x: i32,
@@ -156,6 +157,8 @@ const IDM_FONT_STANDARD: u16 = 97;
 const IDM_FONT_LARGE: u16 = 98;
 const IDM_APPEARANCE_RECOMMENDED: u16 = 99;
 const IDM_APPEARANCE_RESET: u16 = 100;
+const IDM_MONITOR_FIRST: u16 = 200;
+const MAX_MONITOR_MENU_ITEMS: usize = 100;
 
 const WM_DPICHANGED_MSG: u32 = 0x02E0;
 const WM_APP_UPDATE_CHECK_COMPLETE: u32 = WM_APP + 2;
@@ -403,6 +406,8 @@ struct SettingsFile {
     tray_offset: i32,
     #[serde(default)]
     taskbar_index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    monitor_device: Option<String>,
     #[serde(default = "default_poll_interval")]
     poll_interval_ms: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -434,6 +439,7 @@ impl Default for SettingsFile {
         Self {
             tray_offset: 0,
             taskbar_index: 0,
+            monitor_device: None,
             poll_interval_ms: default_poll_interval(),
             language: None,
             appearance: Appearance::default(),
@@ -559,6 +565,7 @@ fn save_state_settings() {
         save_settings(&SettingsFile {
             tray_offset: s.tray_offset,
             taskbar_index: s.taskbar_index,
+            monitor_device: s.monitor_device.clone(),
             poll_interval_ms: s.poll_interval_ms,
             language: s
                 .language_override
@@ -910,6 +917,43 @@ fn attach_to_taskbar(hwnd: HWND, requested_index: usize) -> bool {
         s.embedded = true;
     }
     true
+}
+
+fn preferred_taskbar_index(
+    taskbars: &[native_interop::TaskbarWindow],
+    monitor_device: Option<&str>,
+    legacy_index: usize,
+) -> usize {
+    match monitor_device {
+        Some(device) => taskbars
+            .iter()
+            .position(|taskbar| {
+                native_interop::taskbar_monitor_device(taskbar).as_deref() == Some(device)
+            })
+            .unwrap_or_else(|| {
+                taskbars
+                    .iter()
+                    .position(|taskbar| taskbar.is_primary)
+                    .unwrap_or(0)
+            }),
+        None => legacy_index.min(taskbars.len().saturating_sub(1)),
+    }
+}
+
+fn refresh_taskbar_selection(hwnd: HWND) {
+    let taskbars = native_interop::find_taskbars();
+    if taskbars.is_empty() {
+        return;
+    }
+    let (preferred, legacy_index, current) = {
+        let state = lock_state();
+        let Some(s) = state.as_ref() else { return };
+        (s.monitor_device.clone(), s.taskbar_index, s.taskbar_hwnd)
+    };
+    let index = preferred_taskbar_index(&taskbars, preferred.as_deref(), legacy_index);
+    if current != Some(taskbars[index].hwnd) {
+        attach_to_taskbar(hwnd, index);
+    }
 }
 
 fn taskbar_at_point(pt: POINT) -> Option<(usize, native_interop::TaskbarWindow)> {
@@ -1928,6 +1972,7 @@ pub fn run() {
                 update_status: UpdateStatus::Idle,
                 last_update_check_unix: settings.last_update_check_unix,
                 taskbar_index: settings.taskbar_index,
+                monitor_device: settings.monitor_device.clone(),
                 tray_offset: settings.tray_offset,
                 dragging: false,
                 drag_start_mouse_x: 0,
@@ -1938,7 +1983,13 @@ pub fn run() {
         }
 
         // Try to embed in taskbar
-        if attach_to_taskbar(hwnd, settings.taskbar_index) {
+        let taskbars = native_interop::find_taskbars();
+        let selected_index = preferred_taskbar_index(
+            &taskbars,
+            settings.monitor_device.as_deref(),
+            settings.taskbar_index,
+        );
+        if attach_to_taskbar(hwnd, selected_index) {
             embedded = true;
         }
 
@@ -2931,6 +2982,9 @@ unsafe extern "system" fn wnd_proc(
                 check_language_change();
             }
             refresh_dpi();
+            if msg == WM_DISPLAYCHANGE {
+                refresh_taskbar_selection(hwnd);
+            }
             position_at_taskbar();
             render_layered();
             LRESULT(0)
@@ -3184,6 +3238,12 @@ unsafe extern "system" fn wnd_proc(
                             }
                         }
                         if attach_to_taskbar(hwnd, target_index) {
+                            let mut state = lock_state();
+                            if let Some(s) = state.as_mut() {
+                                s.monitor_device =
+                                    native_interop::taskbar_monitor_device(&target_taskbar);
+                            }
+                            drop(state);
                             position_at_taskbar();
                             render_layered();
                         }
@@ -3268,6 +3328,26 @@ unsafe extern "system" fn wnd_proc(
                     }
                     save_state_settings();
                     position_at_taskbar();
+                }
+                id if (IDM_MONITOR_FIRST..IDM_MONITOR_FIRST + MAX_MONITOR_MENU_ITEMS as u16)
+                    .contains(&id) =>
+                {
+                    let index = (id - IDM_MONITOR_FIRST) as usize;
+                    if let Some(taskbar) = native_interop::find_taskbars().get(index).copied() {
+                        if attach_to_taskbar(hwnd, index) {
+                            {
+                                let mut state = lock_state();
+                                if let Some(s) = state.as_mut() {
+                                    s.monitor_device =
+                                        native_interop::taskbar_monitor_device(&taskbar);
+                                    s.tray_offset = 0;
+                                }
+                            }
+                            save_state_settings();
+                            position_at_taskbar();
+                            render_layered();
+                        }
+                    }
                 }
                 IDM_START_WITH_WINDOWS => {
                     set_startup_enabled(!is_startup_enabled());
@@ -3942,6 +4022,47 @@ fn show_context_menu(hwnd: HWND) {
             PCWSTR::from_raw(reset_pos_str.as_ptr()),
         );
 
+        let taskbars = native_interop::find_taskbars();
+        if taskbars.len() > 1 {
+            let selected_taskbar = {
+                let state = lock_state();
+                state.as_ref().and_then(|s| s.taskbar_hwnd)
+            };
+            let monitor_menu = CreatePopupMenu().unwrap();
+            for (index, taskbar) in taskbars.iter().take(MAX_MONITOR_MENU_ITEMS).enumerate() {
+                let device = native_interop::taskbar_monitor_device(taskbar)
+                    .unwrap_or_else(|| format!("{}", index + 1));
+                let label = if language == LanguageId::SimplifiedChinese {
+                    format!("显示器 {} ({device})", index + 1)
+                } else {
+                    format!("Display {} ({device})", index + 1)
+                };
+                let wide = native_interop::wide_str(&label);
+                let flags = if selected_taskbar == Some(taskbar.hwnd) {
+                    MF_CHECKED
+                } else {
+                    MENU_ITEM_FLAGS(0)
+                };
+                let _ = AppendMenuW(
+                    monitor_menu,
+                    flags,
+                    (IDM_MONITOR_FIRST as usize) + index,
+                    PCWSTR::from_raw(wide.as_ptr()),
+                );
+            }
+            let label = native_interop::wide_str(if language == LanguageId::SimplifiedChinese {
+                "显示器"
+            } else {
+                "Display"
+            });
+            let _ = AppendMenuW(
+                settings_menu,
+                MF_POPUP,
+                monitor_menu.0 as usize,
+                PCWSTR::from_raw(label.as_ptr()),
+            );
+        }
+
         let language_menu = CreatePopupMenu().unwrap();
         let system_label = native_interop::wide_str(strings.system_default);
         let system_flags = if language_override.is_none() {
@@ -4491,6 +4612,7 @@ mod tests {
     fn appearance_settings_preserve_legacy_defaults_and_round_trip() {
         let old: SettingsFile = serde_json::from_str(&test_settings_json("zh-CN")).unwrap();
         assert_eq!(old.appearance, Appearance::default());
+        assert_eq!(old.monitor_device, None);
 
         let customized = SettingsFile {
             appearance: Appearance::translucent_dark_taskbar(),
@@ -4500,6 +4622,17 @@ mod tests {
         let json = serde_json::to_string(&customized).unwrap();
         let restored: SettingsFile = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.appearance, Appearance::translucent_dark_taskbar());
+    }
+
+    #[test]
+    fn chosen_monitor_device_survives_settings_round_trip() {
+        let settings = SettingsFile {
+            monitor_device: Some(r"\\.\DISPLAY2".to_string()),
+            ..SettingsFile::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let restored: SettingsFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.monitor_device, settings.monitor_device);
     }
 
     #[test]

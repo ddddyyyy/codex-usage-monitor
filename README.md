@@ -89,7 +89,7 @@ codex-usage
 Once running, it will appear in your taskbar and as one tray icon in the notification area.
 
 - Drag the left divider to move the taskbar widget
-- On multi-monitor setups, drag the widget onto another Windows taskbar to move it to that screen
+- On multi-monitor setups, choose **Settings → Display** from the right-click menu or drag the widget onto another taskbar. The selection is saved; the primary taskbar is used while the selected display is disconnected, and the widget returns when it reconnects.
 - Right-click the taskbar widget or tray icon for refresh, monitored services, usage rows, quota alerts, update frequency, Start with Windows, reset position, language, updates, and exit
 - Left-click the tray icon to toggle the taskbar widget on or off
 - Enable `Start with Windows` from the right-click menu if you want it to launch automatically when you sign in
