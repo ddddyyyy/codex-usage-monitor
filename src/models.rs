@@ -10,6 +10,7 @@ pub struct UsageSection {
 pub struct UsageData {
     pub session: UsageSection,
     pub weekly: UsageSection,
+    pub credit_balance: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -19,6 +19,7 @@ It sits in your taskbar and shows how much of your Codex usage window remains wi
 
 - A **5h** bar for your current Codex usage window
 - A **7d** bar for your current weekly window
+- A separate two-line Codex credit balance when the account has extra credits
 - Simplified Chinese display with explicit remaining usage and reset countdowns
 - Optional Claude Code usage alongside Codex
 - Optional Antigravity model usage bars for Google's 5-hour and weekly Gemini quota windows

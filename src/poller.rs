@@ -93,6 +93,16 @@ struct CodexTokenData {
 #[derive(Deserialize)]
 struct CodexUsageResponse {
     rate_limit: Option<Option<Box<CodexRateLimitDetails>>>,
+    credits: Option<CodexCredits>,
+}
+
+#[derive(Deserialize)]
+struct CodexCredits {
+    #[serde(default)]
+    has_credits: bool,
+    #[serde(default)]
+    unlimited: bool,
+    balance: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -897,8 +907,19 @@ fn fetch_codex_usage(token: &str, account_id: Option<&str>) -> Result<UsageData,
 }
 
 fn codex_usage_from_response(response: CodexUsageResponse) -> Option<UsageData> {
+    let credit_balance = response.credits.and_then(|credits| {
+        if !credits.has_credits || credits.unlimited {
+            return None;
+        }
+        credits
+            .balance?
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite() && *v >= 0.0)
+    });
     let details = *response.rate_limit.flatten()?;
     let mut data = UsageData::default();
+    data.credit_balance = credit_balance;
     let mut has_session = false;
     let mut has_weekly = false;
 
@@ -1009,7 +1030,11 @@ fn fetch_antigravity_usage_from_endpoint(
     let session = fetch_antigravity_model_quota(base_url, token, project.as_deref())?;
     let weekly = UsageSection::default();
 
-    Ok(UsageData { session, weekly })
+    Ok(UsageData {
+        session,
+        weekly,
+        ..UsageData::default()
+    })
 }
 
 fn fetch_antigravity_project(base_url: &str, token: &str) -> Result<Option<String>, PollError> {
@@ -1759,6 +1784,7 @@ mod tests {
                 resets_at: None,
             },
             weekly: UsageSection::default(),
+            credit_balance: None,
         }
     }
 
@@ -1815,6 +1841,38 @@ mod tests {
 
         assert_eq!(usage.session.percentage, 18.0);
         assert_eq!(usage.weekly.percentage, 33.0);
+    }
+
+    #[test]
+    fn codex_credit_balance_is_only_shown_when_available() {
+        let response = |credits: &str| -> UsageData {
+            let json = format!(
+                r#"{{"rate_limit":{{"primary_window":{{"used_percent":2,"reset_at":1784500338}}}},"credits":{credits}}}"#
+            );
+            let response = serde_json::from_str(&json).expect("valid Codex response");
+            codex_usage_from_response(response).expect("rate limit should be available")
+        };
+        assert_eq!(
+            response(r#"{"has_credits":true,"unlimited":false,"balance":"939.7148505000"}"#)
+                .credit_balance,
+            Some(939.7148505)
+        );
+        assert_eq!(
+            response(r#"{"has_credits":false,"unlimited":false,"balance":"939.7"}"#).credit_balance,
+            None
+        );
+        assert_eq!(
+            response(r#"{"has_credits":true,"unlimited":true,"balance":"939.7"}"#).credit_balance,
+            None
+        );
+        assert_eq!(
+            response(r#"{"has_credits":true,"unlimited":false,"balance":null}"#).credit_balance,
+            None
+        );
+        assert_eq!(
+            response(r#"{"has_credits":true,"unlimited":false,"balance":"NaN"}"#).credit_balance,
+            None
+        );
     }
 
     #[test]

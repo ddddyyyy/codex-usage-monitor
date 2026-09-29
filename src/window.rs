@@ -1550,6 +1550,74 @@ const SIMPLIFIED_CHINESE_TEXT_WIDTH: i32 = 126;
 const MODEL_RIGHT_MARGIN: i32 = 3;
 const RIGHT_MARGIN: i32 = 1;
 const WIDGET_HEIGHT: i32 = 46;
+const CREDIT_GAP: i32 = 8;
+
+fn credit_label(language: LanguageId) -> &'static str {
+    match language {
+        LanguageId::SimplifiedChinese => "额外点数",
+        LanguageId::TraditionalChinese => "額外點數",
+        LanguageId::Japanese => "追加クレジット",
+        LanguageId::Korean => "추가 크레딧",
+        LanguageId::Dutch => "Credits",
+        LanguageId::Spanish => "Créditos",
+        LanguageId::French => "Crédits",
+        LanguageId::German => "Guthaben",
+        LanguageId::Russian => "Кредиты",
+        LanguageId::PortugueseBrazil => "Créditos",
+        LanguageId::English => "Credits",
+    }
+}
+
+fn credit_value(balance: f64) -> String {
+    if balance >= 1_000_000.0 {
+        format!("{:.1}M", balance / 1_000_000.0)
+    } else if balance >= 10_000.0 {
+        format!("{:.1}k", balance / 1_000.0)
+    } else {
+        format!("{balance:.1}")
+    }
+}
+
+fn visible_credit_balance(state: &AppState) -> Option<f64> {
+    if !state.show_codex || !state.last_poll_ok {
+        return None;
+    }
+    state.data.as_ref()?.codex.as_ref()?.credit_balance
+}
+
+fn credit_column_width(language: LanguageId, appearance: Appearance, value: &str) -> i32 {
+    unsafe {
+        let hdc = GetDC(HWND::default());
+        if hdc.is_invalid() {
+            return sc(90);
+        }
+        let font = create_widget_font(appearance);
+        if font.is_invalid() {
+            ReleaseDC(HWND::default(), hdc);
+            return sc(90);
+        }
+        let old_font = SelectObject(hdc, font);
+        let width = [credit_label(language), value]
+            .into_iter()
+            .map(|s| {
+                let wide: Vec<u16> = s.encode_utf16().collect();
+                let mut size = SIZE::default();
+                if GetTextExtentPoint32W(hdc, &wide, &mut size).as_bool() {
+                    size.cx
+                } else {
+                    0
+                }
+            })
+            .max()
+            .unwrap_or(0)
+            .max(sc(70))
+            + sc(4);
+        SelectObject(hdc, old_font);
+        let _ = DeleteObject(font);
+        ReleaseDC(HWND::default(), hdc);
+        width
+    }
+}
 
 fn is_drag_handle_point(client_x: i32, client_y: i32) -> bool {
     let divider_h = sc(25);
@@ -1693,7 +1761,12 @@ fn usage_percent_for_display(language: LanguageId, used_percentage: f64) -> f64 
     }
 }
 
-fn total_widget_width_for(active_models: i32, language: LanguageId, appearance: Appearance) -> i32 {
+fn total_widget_width_for(
+    active_models: i32,
+    language: LanguageId,
+    appearance: Appearance,
+    credit: Option<&str>,
+) -> i32 {
     let bar_segments = row_bar_segment_count(active_models);
     let (label_width, text_width) = usage_layout_widths(language, appearance);
     let model_width = (sc(SEGMENT_W) + sc(SEGMENT_GAP)) * bar_segments - sc(SEGMENT_GAP)
@@ -1707,9 +1780,13 @@ fn total_widget_width_for(active_models: i32, language: LanguageId, appearance: 
         + model_width * active_models
         + sc(MODEL_RIGHT_MARGIN) * (active_models - 1)
         + sc(RIGHT_MARGIN)
+        + credit
+            .map(|value| sc(CREDIT_GAP * 2 + 1) + credit_column_width(language, appearance, value))
+            .unwrap_or(0)
 }
 
 fn total_widget_width_for_state(state: &AppState) -> i32 {
+    let credit = visible_credit_balance(state).map(credit_value);
     total_widget_width_for(
         active_model_count(
             state.show_claude_code,
@@ -1718,11 +1795,12 @@ fn total_widget_width_for_state(state: &AppState) -> i32 {
         ),
         state.language,
         state.appearance,
+        credit.as_deref(),
     )
 }
 
 fn total_widget_width() -> i32 {
-    let (active_models, language, appearance) = {
+    let (active_models, language, appearance, credit) = {
         let state = lock_state();
         state
             .as_ref()
@@ -1731,11 +1809,12 @@ fn total_widget_width() -> i32 {
                     active_model_count(s.show_claude_code, s.show_codex, s.show_antigravity),
                     s.language,
                     s.appearance,
+                    visible_credit_balance(s).map(credit_value),
                 )
             })
-            .unwrap_or((1, LanguageId::English, Appearance::default()))
+            .unwrap_or((1, LanguageId::English, Appearance::default(), None))
     };
-    total_widget_width_for(active_models, language, appearance)
+    total_widget_width_for(active_models, language, appearance, credit.as_deref())
 }
 
 fn claude_accent_color() -> Color {
@@ -1897,7 +1976,7 @@ pub fn run() {
             WS_POPUP,
             0,
             0,
-            total_widget_width_for(initial_model_count, language, settings.appearance),
+            total_widget_width_for(initial_model_count, language, settings.appearance, None),
             sc(WIDGET_HEIGHT),
             HWND::default(),
             HMENU::default(),
@@ -2435,6 +2514,63 @@ fn paint_content(
                 track,
                 label_width,
                 text_width,
+            );
+        }
+
+        let credit = {
+            let state = lock_state();
+            state
+                .as_ref()
+                .and_then(visible_credit_balance)
+                .map(credit_value)
+        };
+        if let Some(value) = credit {
+            let column_width = credit_column_width(language, appearance, &value);
+            let left = width - sc(RIGHT_MARGIN) - column_width - sc(CREDIT_GAP);
+            let separator = RECT {
+                left: left - sc(CREDIT_GAP),
+                top: divider_top,
+                right: left - sc(CREDIT_GAP) + sc(1),
+                bottom: divider_bottom,
+            };
+            let separator_brush =
+                CreateSolidBrush(COLORREF(Color::from_hex("#62666B").to_colorref()));
+            FillRect(hdc, &separator, separator_brush);
+            let _ = DeleteObject(separator_brush);
+
+            let label_color = if is_dark {
+                Color::from_hex("#BFC1C4")
+            } else {
+                Color::from_hex("#555B61")
+            };
+            let mut label: Vec<u16> = credit_label(language).encode_utf16().collect();
+            let mut label_rect = RECT {
+                left,
+                top: row1_y,
+                right: left + column_width,
+                bottom: row1_y + sc(ROW_HEIGHT),
+            };
+            let _ = SetTextColor(hdc, COLORREF(label_color.to_colorref()));
+            let _ = DrawTextW(
+                hdc,
+                &mut label,
+                &mut label_rect,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+            );
+
+            let mut value_wide: Vec<u16> = value.encode_utf16().collect();
+            let mut value_rect = RECT {
+                left,
+                top: row2_y,
+                right: left + column_width,
+                bottom: row2_y + sc(ROW_HEIGHT),
+            };
+            let _ = SetTextColor(hdc, COLORREF(text_color.to_colorref()));
+            let _ = DrawTextW(
+                hdc,
+                &mut value_wide,
+                &mut value_rect,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE,
             );
         }
 
@@ -3061,6 +3197,7 @@ unsafe extern "system" fn wnd_proc(
         WM_APP_USAGE_UPDATED => {
             check_theme_change();
             check_language_change();
+            position_at_taskbar();
             render_layered();
             schedule_countdown_timer();
             suppress_tray_reposition_for(Duration::from_millis(
@@ -4551,12 +4688,28 @@ mod tests {
                         assert!(rect.right <= width, "{language:?}: {text:?}");
                         assert!(rect.bottom <= sc(ROW_HEIGHT), "{language:?}: {text:?}");
                     }
+                    let credit_width = credit_column_width(language, appearance, "9999.9");
+                    for text in [credit_label(language), "9999.9"] {
+                        let mut wide: Vec<u16> = text.encode_utf16().collect();
+                        let mut rect = RECT::default();
+                        DrawTextW(hdc, &mut wide, &mut rect, DT_CALCRECT | DT_SINGLELINE);
+                        assert!(rect.right <= credit_width, "{language:?}: {text:?}");
+                        assert!(rect.bottom <= sc(ROW_HEIGHT), "{language:?}: {text:?}");
+                    }
                     SelectObject(hdc, old_font);
                     let _ = DeleteObject(font);
                 }
             }
             ReleaseDC(HWND::default(), hdc);
         }
+    }
+
+    #[test]
+    fn credit_balance_uses_compact_display_values() {
+        assert_eq!(credit_value(0.0), "0.0");
+        assert_eq!(credit_value(939.7148505), "939.7");
+        assert_eq!(credit_value(10_000.0), "10.0k");
+        assert_eq!(credit_value(1_250_000.0), "1.2M");
     }
 
     #[test]
