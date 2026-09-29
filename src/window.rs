@@ -75,6 +75,7 @@ struct AppState {
     show_antigravity: bool,
     show_session_window: bool,
     show_weekly_window: bool,
+    show_credit_balance: bool,
     alert_threshold_percent: u8,
     notified_quota_windows: BTreeSet<String>,
 
@@ -142,6 +143,7 @@ const IDM_MODEL_CODEX: u16 = 61;
 const IDM_MODEL_ANTIGRAVITY: u16 = 62;
 const IDM_SHOW_SESSION_WINDOW: u16 = 71;
 const IDM_SHOW_WEEKLY_WINDOW: u16 = 72;
+const IDM_SHOW_CREDIT_BALANCE: u16 = 73;
 const IDM_ALERT_OFF: u16 = 80;
 const IDM_ALERT_10: u16 = 81;
 const IDM_ALERT_20: u16 = 82;
@@ -429,6 +431,8 @@ struct SettingsFile {
     #[serde(default = "default_show_usage_window")]
     show_weekly_window: bool,
     #[serde(default)]
+    show_credit_balance: bool,
+    #[serde(default)]
     alert_threshold_percent: u8,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     notified_quota_windows: Vec<String>,
@@ -450,6 +454,7 @@ impl Default for SettingsFile {
             show_antigravity: false,
             show_session_window: true,
             show_weekly_window: true,
+            show_credit_balance: false,
             alert_threshold_percent: 0,
             notified_quota_windows: Vec::new(),
         }
@@ -578,6 +583,7 @@ fn save_state_settings() {
             show_antigravity: s.show_antigravity,
             show_session_window: s.show_session_window,
             show_weekly_window: s.show_weekly_window,
+            show_credit_balance: s.show_credit_balance,
             alert_threshold_percent: s.alert_threshold_percent,
             notified_quota_windows: s.notified_quota_windows.iter().cloned().collect(),
         });
@@ -1579,7 +1585,7 @@ fn credit_value(balance: f64) -> String {
 }
 
 fn visible_credit_balance(state: &AppState) -> Option<f64> {
-    if !state.show_codex || !state.last_poll_ok {
+    if !state.show_codex || !state.show_credit_balance || !state.last_poll_ok {
         return None;
     }
     state.data.as_ref()?.codex.as_ref()?.credit_balance
@@ -2038,6 +2044,7 @@ pub fn run() {
                 show_antigravity: settings.show_antigravity,
                 show_session_window: settings.show_session_window,
                 show_weekly_window: settings.show_weekly_window,
+                show_credit_balance: settings.show_credit_balance,
                 alert_threshold_percent: settings.alert_threshold_percent,
                 notified_quota_windows: settings.notified_quota_windows.into_iter().collect(),
                 data: None,
@@ -3530,6 +3537,17 @@ unsafe extern "system" fn wnd_proc(
                     render_layered();
                     sync_tray_icons(hwnd);
                 }
+                IDM_SHOW_CREDIT_BALANCE => {
+                    {
+                        let mut state = lock_state();
+                        if let Some(s) = state.as_mut() {
+                            s.show_credit_balance = !s.show_credit_balance;
+                        }
+                    }
+                    save_state_settings();
+                    position_at_taskbar();
+                    render_layered();
+                }
                 IDM_APPEARANCE_RECOMMENDED
                 | IDM_APPEARANCE_RESET
                 | IDM_PALETTE_SYSTEM
@@ -3749,6 +3767,7 @@ fn show_context_menu(hwnd: HWND) {
             show_antigravity,
             show_session_window,
             show_weekly_window,
+            show_credit_balance,
             alert_threshold_percent,
             appearance,
         ) = {
@@ -3768,6 +3787,7 @@ fn show_context_menu(hwnd: HWND) {
                     s.show_antigravity,
                     s.show_session_window,
                     s.show_weekly_window,
+                    s.show_credit_balance,
                     s.alert_threshold_percent,
                     s.appearance,
                 ),
@@ -3785,6 +3805,7 @@ fn show_context_menu(hwnd: HWND) {
                     false,
                     true,
                     true,
+                    false,
                     0,
                     Appearance::default(),
                 ),
@@ -3918,6 +3939,22 @@ fn show_context_menu(hwnd: HWND) {
             weekly_flags,
             IDM_SHOW_WEEKLY_WINDOW as usize,
             PCWSTR::from_raw(weekly_label.as_ptr()),
+        );
+        let credit_label = native_interop::wide_str(if language == LanguageId::SimplifiedChinese {
+            "显示额外点数"
+        } else {
+            "Show extra credits"
+        });
+        let credit_flags = if show_credit_balance {
+            MF_CHECKED
+        } else {
+            MENU_ITEM_FLAGS(0)
+        };
+        let _ = AppendMenuW(
+            usage_menu,
+            credit_flags,
+            IDM_SHOW_CREDIT_BALANCE as usize,
+            PCWSTR::from_raw(credit_label.as_ptr()),
         );
         let usage_label = native_interop::wide_str(if language == LanguageId::SimplifiedChinese {
             "显示用量"
@@ -4766,15 +4803,18 @@ mod tests {
         let old: SettingsFile = serde_json::from_str(&test_settings_json("zh-CN")).unwrap();
         assert_eq!(old.appearance, Appearance::default());
         assert_eq!(old.monitor_device, None);
+        assert!(!old.show_credit_balance);
 
         let customized = SettingsFile {
             appearance: Appearance::translucent_dark_taskbar(),
+            show_credit_balance: true,
             ..old
         };
         assert_eq!(customized.appearance.bar_style, BarStyle::Continuous);
         let json = serde_json::to_string(&customized).unwrap();
         let restored: SettingsFile = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.appearance, Appearance::translucent_dark_taskbar());
+        assert!(restored.show_credit_balance);
     }
 
     #[test]
